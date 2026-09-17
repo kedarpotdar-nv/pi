@@ -100,6 +100,73 @@ describe("Ollama summary thinking", () => {
 		},
 	);
 
+	it.each([false, true])(
+		"summarizes on the source model before shrinking with required thinking=%s",
+		async (required) => {
+			const source = await setup(32768, required);
+			seedHistory(4);
+			harness.setResponses([
+				(_context, options, _state, model) => {
+					expect(model.contextWindow).toBe(32768);
+					expect(options?.reasoning).toBe(required ? "minimal" : undefined);
+					expect(options?.maxTokens).toBe(required ? 3072 : 1024);
+					return fauxAssistantMessage("Preserve KEEP-LABEL; continue the pending work.");
+				},
+			]);
+			await harness.session.setModel({ ...source, id: "small", contextWindow: 8192 });
+			expect(harness.session.model?.id).toBe("small");
+			expect(JSON.stringify(harness.session.messages)).toContain("KEEP-LABEL");
+			harness.setResponses([fauxAssistantMessage("continued after switching")]);
+			await harness.session.prompt("Continue.");
+			expect(harness.session.getLastAssistantText()).toBe("continued after switching");
+			expect(harness.eventsOfType("compaction_end")).toHaveLength(1);
+		},
+	);
+
+	it.each(["length", "error"] as const)("preserves the source and history after a summary %s", async (stopReason) => {
+		const source = await setup(32768, true);
+		seedHistory(4);
+		const before = structuredClone(harness.sessionManager.getEntries());
+		const messages = structuredClone(harness.session.messages);
+		harness.setResponses([fauxAssistantMessage("partial", { stopReason, errorMessage: "runner failed" })]);
+		await expect(harness.session.setModel({ ...source, id: "small", contextWindow: 8192 })).rejects.toThrow();
+		expect(harness.session.model).toEqual(source);
+		expect(harness.sessionManager.getEntries()).toEqual(before);
+		expect(harness.session.messages).toEqual(messages);
+		harness.setResponses([fauxAssistantMessage("still usable")]);
+		await harness.session.prompt("Continue.");
+		expect(harness.session.getLastAssistantText()).toBe("still usable");
+	});
+
+	it("cancels required-thinking summarization without saving a partial checkpoint", async () => {
+		const source = await setup(32768, true);
+		seedHistory(4);
+		const before = structuredClone(harness.sessionManager.getEntries());
+		let started!: () => void;
+		const summarizing = new Promise<void>((resolve) => {
+			started = resolve;
+		});
+		harness.setResponses([
+			async (_context, options) => {
+				started();
+				await new Promise<void>((resolve) =>
+					options?.signal?.addEventListener("abort", () => resolve(), { once: true }),
+				);
+				return fauxAssistantMessage("partial", { stopReason: "aborted" });
+			},
+		]);
+		const switching = harness.session.setModel({ ...source, id: "small", contextWindow: 8192 });
+		const rejected = expect(switching).rejects.toThrow();
+		await summarizing;
+		harness.session.abortCompaction();
+		await rejected;
+		expect(harness.session.model).toEqual(source);
+		expect(harness.sessionManager.getEntries()).toEqual(before);
+		harness.setResponses([fauxAssistantMessage("still usable")]);
+		await harness.session.prompt("Continue.");
+		expect(harness.session.getLastAssistantText()).toBe("still usable");
+	});
+
 	it.each([
 		{ maxTokens: 1500, inputChars: 100, expected: 1500 },
 		{ maxTokens: 4096, inputChars: 18000, expected: 1936 },

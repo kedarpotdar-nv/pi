@@ -58,13 +58,15 @@ Override a discovered model in `~/.pi/agent/models.json`:
 
 Check Ollama's actual allocation with `ollama ps`. Pi requests `truncate: false` and `shift: false` so context overflow is reported rather than silently discarding history. Sampling overrides cannot replace the selected context or output budgets; low-level `onPayload` hooks can intentionally replace the request.
 
+When switching a large conversation to a smaller window, Pi first summarizes with the current model. It checks the estimated size of the checkpoint, retained history, system prompt, and tools before committing the switch. A failed or oversized summary keeps the current model and history. Estimates are not a tokenizer guarantee; actual overflow remains an explicit error handled by Pi's bounded compaction recovery. A very small window or one oversized retained turn may require a larger context or a new session.
+
 If compaction's configured reserve plus retained-history budget does not fit the selected window, each is capped at one quarter of that window. With the default settings and an 8192-token window, both become 2048. History summaries then receive up to 1638 output tokens and turn-prefix summaries up to 1024, further limited by `maxTokens`. Increasing only `maxTokens` does not increase those text budgets.
 
 ## Thinking and tools
 
 `--thinking off` sends `think: false` to models that support reasoning. Other supported Pi levels enable thinking. Models such as GPT-OSS use effort values and cannot disable reasoning; their advertised thinking levels reflect that limitation. Thinking and the final answer share the output budget.
 
-Pi's built-in Ollama summaries use a separate thinking policy. Thinking is disabled when the model permits it. For models that require thinking, Pi selects the lowest supported level and allows up to 2048 additional generation tokens, bounded by the model output limit and estimated remaining context. This applies to compaction and branch summaries. Ordinary conversation keeps the selected thinking level. There is no separate hard reasoning-token limit in this API; an incomplete summary still fails safely.
+Pi's built-in Ollama summaries use a separate thinking policy. Thinking is disabled when the model permits it. For models that require thinking, Pi selects the lowest supported level and allows up to 2048 additional generation tokens, bounded by the model output limit and estimated remaining context. This applies to compaction, smaller-window switching, and branch summaries. Ordinary conversation keeps the selected thinking level. There is no separate hard reasoning-token limit in this API; an incomplete summary still fails safely.
 
 Pi preserves native thinking, text, parallel tool calls, tool results, and images across turns. A truncated or failed stream ends as an error, so its tool calls do not execute. Incomplete summaries are not saved as checkpoints.
 
