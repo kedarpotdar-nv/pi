@@ -432,7 +432,7 @@ export class AgentSession {
 			}
 			throw error;
 		}
-		if (result && (result.auth.apiKey || result.auth.headers)) {
+		if (result) {
 			const requestModel = result.auth.baseUrl ? { ...model, baseUrl: result.auth.baseUrl } : model;
 			return {
 				model: requestModel,
@@ -544,13 +544,18 @@ export class AgentSession {
 
 	private async _compactBeforeNextAssistantResponse(context: AgentContext): Promise<AgentContext> {
 		const model = this.model;
-		const settings = this.settingsManager.getCompactionSettings(model);
+		const settings = this._getCompactionSettings(model);
+		const estimate = estimateContextTokens(context.messages);
+		const source = estimate.lastUsageIndex === null ? undefined : context.messages[estimate.lastUsageIndex];
+		const boundary = getLatestCompactionEntry(this.sessionManager.getBranch());
+		const stale =
+			source?.role === "assistant" &&
+			(source.model !== model?.id ||
+				source.provider !== model?.provider ||
+				(boundary && source.timestamp <= new Date(boundary.timestamp).getTime()));
+		const tokens = stale ? estimateMessagesTokens(context.messages) : estimate.tokens;
 
-		if (
-			!model ||
-			model.contextWindow <= 0 ||
-			!shouldCompact(estimateContextTokens(context.messages).tokens, model.contextWindow, settings)
-		) {
+		if (!model || model.contextWindow <= 0 || !shouldCompact(tokens, model.contextWindow, settings)) {
 			return context;
 		}
 
@@ -1958,6 +1963,23 @@ export class AgentSession {
 	// Compaction
 	// =========================================================================
 
+	private _getCompactionSettings(model = this.model) {
+		const settings = this.settingsManager.getCompactionSettings(model);
+		if (
+			!model ||
+			model.contextWindow <= 0 ||
+			settings.reserveTokens + settings.keepRecentTokens < model.contextWindow
+		)
+			return settings;
+		// Leave room for history and generation on local models with small windows.
+		const limit = Math.max(1, Math.floor(model.contextWindow / 4));
+		return {
+			...settings,
+			reserveTokens: Math.min(settings.reserveTokens, limit),
+			keepRecentTokens: Math.min(settings.keepRecentTokens, limit),
+		};
+	}
+
 	/** Generate Pi's built-in compaction summary for manual and automatic compaction. */
 	private async _runDefaultCompaction(
 		preparation: CompactionPreparation,
@@ -2017,7 +2039,7 @@ export class AgentSession {
 				throw new Error(formatNoModelSelectedMessage());
 			}
 
-			const settings = this.settingsManager.getCompactionSettings(model);
+			const settings = this._getCompactionSettings(model);
 			const { model: requestModel, apiKey, headers, env } = await this._getSummarizationRequestAuth(model);
 
 			const pathEntries = this.sessionManager.getBranch();
@@ -2193,7 +2215,7 @@ export class AgentSession {
 	 * @returns Whether the post-run loop should call `agent.continue()` for overflow recovery or queued messages
 	 */
 	private async _checkCompaction(assistantMessage: AssistantMessage, skipAbortedCheck = true): Promise<boolean> {
-		const settings = this.settingsManager.getCompactionSettings(this.model);
+		const settings = this._getCompactionSettings(this.model);
 		if (!settings.enabled) return false;
 
 		// Skip if message was aborted (user cancelled) - unless skipAbortedCheck is false
@@ -2310,7 +2332,7 @@ export class AgentSession {
 	 */
 	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<boolean> {
 		const model = this.model;
-		const settings = this.settingsManager.getCompactionSettings(model);
+		const settings = this._getCompactionSettings(model);
 		let started = false;
 		let fromExtension = false;
 
