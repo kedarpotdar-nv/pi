@@ -341,7 +341,7 @@ const response = await models.completeSimple(model, {
 });
 ```
 
-Discovery requires a configured endpoint and does not load model weights. Local servers need no API key. The native `ollama-chat` API preserves thinking and reports context overflow explicitly. It requests the model's saved `num_ctx`, or 8192 when absent, bounded by its trained context limit. Pi sends that value on each request, superseding the server's default.
+Discovery requires a configured endpoint and does not load model weights. Local servers need no API key. The native `ollama-chat` API preserves thinking and reports context overflow explicitly. It requests the model's saved `num_ctx`, or 8192 when absent, bounded by its trained context limit. Pi sends that value on each request, superseding the server's default. See the [Ollama guide](../coding-agent/docs/ollama.md) for context overrides, thinking, and coding-agent setup.
 
 ## Auth
 
